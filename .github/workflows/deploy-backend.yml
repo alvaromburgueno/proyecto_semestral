@@ -1,0 +1,74 @@
+name: CI/CD Backend
+on:
+  push:
+    branches: ["deploy"] # Se ejecuta al hacer push a la rama deploy
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar el código/repositorio
+        uses: actions/checkout@v4
+        
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Iniciar sesión en Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" \
+          | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+      - name: Generar tags de la imagen
+        id: tags
+        run: echo "VERSION=1.0.${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+        
+      - name: Construir y publicar imagen de VENTAS
+        run: |
+          IMAGE_VENTAS="${{ secrets.DOCKER_USERNAME }}/smartlogix-ventas"
+          docker build -f back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile -t "${IMAGE_VENTAS}:latest" -t "${IMAGE_VENTAS}:${{ steps.tags.outputs.VERSION }}" back-Ventas_SpringBoot/Springboot-API-REST
+          docker push "${IMAGE_VENTAS}:latest"
+          docker push "${IMAGE_VENTAS}:${{ steps.tags.outputs.VERSION }}"
+
+      - name: Construir y publicar imagen de DESPACHO
+        run: |
+          # Ajustado a 'smartlogix-despacho' en singular según tu docker-compose
+          IMAGE_DESPACHO="${{ secrets.DOCKER_USERNAME }}/smartlogix-despacho"
+          docker build -f back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO/Dockerfile -t "${IMAGE_DESPACHO}:latest" -t "${IMAGE_DESPACHO}:${{ steps.tags.outputs.VERSION }}" back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+          docker push "${IMAGE_DESPACHO}:latest"
+          docker push "${IMAGE_DESPACHO}:${{ steps.tags.outputs.VERSION }}"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      BACKEND_INSTANCE_ID: i-09dbbedaab0b6a171 
+      # Restaurada tu ruta original en AWS
+      BACKEND_APP_DIR: /home/ssm-user
+    steps:
+      - name: Configurar AWS credentials
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token=${{ secrets.AWS_SESSION_TOKEN }}
+          EOF
+          cat > ~/.aws/config << EOF
+          [default]
+          region=${AWS_REGION}
+          output=json
+          EOF
+      - name: Deploy backend por SSM (docker compose)
+        run: |
+          aws ssm send-command \
+          --region "${AWS_REGION}" \
+          --document-name "AWS-RunShellScript" \
+          --instance-ids "${BACKEND_INSTANCE_ID}" \
+          --parameters commands="[
+          \"cd ${BACKEND_APP_DIR}\",
+          \"docker compose pull\",
+          \"docker compose down\",
+          \"docker compose up -d\"
+          ]"

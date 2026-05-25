@@ -1,0 +1,60 @@
+name: CI/CD Frontend
+on:
+  push:
+    branches: ["deploy"] # Se ejecuta al hacer push a la rama deploy según la pauta
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar el código/repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Iniciar sesión en Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" \
+          | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      - name: Generar tags de la imagen
+        id: tags
+        run: echo "VERSION=1.0.${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+      - name: Construir y publicar imagen Frontend
+        run: |
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/smartlogix-frontend"
+          docker build -f front_despacho/Dockerfile -t "${IMAGE}:${{ steps.tags.outputs.VERSION }}" front_despacho
+          docker push "${IMAGE}:${{ steps.tags.outputs.VERSION }}"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      FRONTEND_INSTANCE_ID: i-0def62213eb7362ea 
+      FRONTEND_APP_DIR: /home/ssm-user # La ruta donde clonaste tu repo en la EC2
+    steps:
+      - name: Configurar AWS credentials
+        run: |
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials << EOF
+          [default]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token=${{ secrets.AWS_SESSION_TOKEN }}
+          EOF
+          cat > ~/.aws/config << EOF
+          [default]
+          region=${AWS_REGION}
+          output=json
+          EOF
+      - name: Deploy frontend por SSM (docker compose)
+        run: |
+          aws ssm send-command \
+          --region "${AWS_REGION}" \
+          --document-name "AWS-RunShellScript" \
+          --instance-ids "${FRONTEND_INSTANCE_ID}" \
+          --parameters commands="[
+          \"cd ${FRONTEND_APP_DIR}\",
+          \"docker compose pull\",
+          \"docker compose down\",
+          \"docker compose up -d\"
+          ]"
